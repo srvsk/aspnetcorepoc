@@ -1,0 +1,29 @@
+trigger:
+  branches:
+    include: 
+    - main
+
+variables:
+  buildConfiguration: 'Release'
+  location: 'southindia'
+  acrHostName: 'infydevops.azurecr.io'
+  acrName: 'infydevops'
+  rgName: 'Rg-DevOps'
+  imageName: 'DevOpsDockerProj'
+  webAppName: 'Infydevopssample'
+  apiVersion: '2020-11-01-preview'
+  SonarQubeProjectKey: 'InfydevopsSQsample'
+  SonarQubeProjectName: 'InfydevopsSQsample'
+
+jobs:
+- template: './azure-pipelines.job-template.yml'
+  parameters:
+    job:
+      name: 'linux'
+      displayName: 'Run on Linux'
+    pool:
+      vmImage: 'ubuntu-20.04'
+    sonar:
+      enabled: False
+      buildBreaker:
+        enabled: True

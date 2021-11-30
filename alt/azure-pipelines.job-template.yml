@@ -1,0 +1,192 @@
+parameters:
+  job:
+    name: ''
+    displayName: ''
+  pool: ''
+  build:
+    configuration: 'Release'
+  sonar:
+    enabled: False
+    runAnalysisTimeoutInMinutes: 5
+    publishPollingTimeoutSeconds: 300
+    buildBreaker:
+      enabled: False
+  publishPipelineArtifacts: True
+  runDotNetFormatTool: False
+  runTests: True
+  integrationTests:
+      enabled: False
+    databaseHost: ''
+    databaseName: ''
+    databaseUsername: ''
+    databasePassword: ''
+    databaseDockerImage: ''
+    composeProjectName: ''
+  
+stages:
+# 1) Build Stage
+- stage: BuildAndTest
+  jobs:
+  - job: ${{ parameters.job.name }}
+    displayName: ${{ parameters.job.displayName }}
+    continueOnError: False
+    pool: ${{ parameters.pool }}
+    workspace:
+      clean: all
+    steps:      
+    
+    # 1.a) Prepare the dotnet sdk 6.0.x
+    - task: UseDotNet@2
+      displayName: 'Use .NET Core sdk'
+      inputs:
+        packageType: sdk
+        version: 6.0.x
+        installationPath: $(Agent.ToolsDirectory)/dotnet        
+    
+    # 1.b) Prepare the dotnet sdk 6.0.x
+    - task: DotNetCoreCLI@2
+      displayName: Install ReportGenerator tool
+      inputs:
+        command: custom
+        custom: tool
+        arguments: install --tool-path . dotnet-reportgenerator-globaltool 
+
+     # 1.c) Prepare for sonarqube analysis
+    - task: SonarQubePrepare@4
+      displayName: 'Prepare analysis on SonarQube'
+      condition: eq(${{ parameters.sonar.enabled }}, True)
+      inputs:
+        SonarQube: sonarlevi # SonarQube Connector
+        scannerMode: CLI
+        configMode: manual
+        cliProjectKey: $(SonarQubeProjectKey)
+        cliProjectName: $(SonarQubeProjectName)
+        extraProperties: |
+          # Additional properties that will be passed to the scanner, 
+          # Put one key=value per line, example:
+          # sonar.exclusions=**/*.bin
+          sonar.cs.opencover.reportsPaths="$(Agent.TempDirectory)/coverage.opencover.xml"
+
+    # 1.d) Restore dependencies
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet restore'
+      inputs:
+        command: restore
+        projects: '**/*.csproj'
+
+    # 1.e) Build app
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet build'
+      inputs:
+        command: build
+        projects: '**/*.csproj'
+        arguments: '--configuration $(buildConfiguration)'
+
+    # 1.f) Run unit tests
+    - task: DotNetCoreCLI@2
+      displayName: Test
+      inputs:
+        command: test
+        projects: '**/*UnitTests/*.csproj'
+        publishTestResults: false
+        arguments: '--configuration $(buildConfiguration) /p:CollectCoverage=true /p:CoverletOutput=$(Agent.TempDirectory)/ /p:CoverletOutputFormat=opencover'
+      condition: succeededOrFailed()
+
+    # 1.g) Sonar Qube Code Quality Check
+    - task: SonarQubeAnalyze@4
+      displayName: 'Run Code Analysis'
+
+    - task: SonarQubePublish@4
+      displayName: 'Publish Quality Gate Result'   
+
+    # 1.h) Publish the app
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet publish'
+      inputs:
+        command: publish
+        publishWebProjects: True
+        arguments: '--configuration $(BuildConfiguration) --output $(System.DefaultWorkingDirectory)/PublishedWebApp'
+        zipAfterPublish: false
+
+    # 1.i) Build container image
+    - task: Docker@1
+      displayName: 'Build container image'
+      inputs:
+        azureSubscriptionEndpoint: 'AzureSC' # Azure Subscription Connector
+        azureContainerRegistry: '$(acrHostName)'
+        imageName: '$(imageName):$(Build.BuildId)'
+        useDefaultContext: false
+        buildContext: '$(System.DefaultWorkingDirectory)/PublishedWebApp'
+    
+    # 1.j) Push container image
+    - task: Docker@1
+      displayName: 'Push container image'
+      inputs:
+        azureSubscriptionEndpoint: 'AzureSC' # Azure Subscription Connector
+        azureContainerRegistry: '$(acrHostName)'
+        command: 'Push an image'
+        imageName: '$(imageName):$(Build.BuildId)'
+
+    # 1.k) Copy ARM templates
+    - task: CopyFiles@2
+      displayName: 'Copy ARM templates'
+      inputs:
+        SourceFolder: ArmTemplates
+        TargetFolder: '$(build.artifactstagingdirectory)'
+
+    # 1.l) Publish the app as an artifact
+    - publish: $(Build.StagingDirectory)
+      artifact: app
+
+# 2) Staging release
+- stage: Staging
+  jobs:
+  - job: Release
+    pool: ${{ parameters.pool }}
+    steps:
+    # 2.a) Don't clone the repo
+    - checkout: none
+
+    # 2.b) Download the published application artifact
+    - download: current
+      artifact: app
+
+    # 2.c) Deploy App Service
+    - task: AzureRmWebAppDeployment@3
+      displayName: 'Deploy Azure App Service'
+      inputs:
+        azureSubscription: 'AzureSC'
+        appType: applinux
+        WebAppName: $(webAppName)
+        DockerNamespace: $(acrHostName)
+        DockerRepository: $(webAppName)
+        DockerImageTag: '$(Build.BuildId)'
+        WebAppUri: webAppUrl
+        TakeAppOfflineFlag: true
+        UseWebDeploy: true
+        RenameFilesFlag: true
+
+    # 2.d)  Visual Studio Test
+    # Run unit and functional tests (Selenium, Appium, Coded UI test, etc.) using the Visual Studio Test (VsTest) runner. Test frameworks that have a Visual Studio test adapter such as MsTest, xUnit, NUnit, Chutzpah (for JavaScript tests using QUnit, Mocha and Jasmine), etc. can be run. Tests can be distributed on multiple agents using this task (version 2).
+    - task: VSTest@2
+      inputs:
+        #testSelector: 'testAssemblies' # Options: testAssemblies, testPlan, testRun
+        #testAssemblyVer2: | # Required when testSelector == TestAssemblies
+        #  **\*test*.dll
+        #  !**\*TestAdapter.dll
+        #  !**\obj\** 
+        #testPlan: # Required when testSelector == TestPlan
+        #testSuite: # Required when testSelector == TestPlan
+        #testConfiguration: # Required when testSelector == TestPlan
+
+    # 2.e) Cloud-based Apache JMeter load test
+    # Run an Apache JMeter load test in the cloud
+    - task: ApacheJMeterLoadTest@1
+      inputs:
+        #connectedServiceName: # Optional
+        testDrop: 
+        #loadTest: 'jmeter.jmx' 
+        #agentCount: '1' # Options: 1, 2, 3, 4, 5
+        #runDuration: '60' # Options: 60, 120, 180, 240, 300
+        #geoLocation: 'Default' # Optional. Options: default, australia East, australia Southeast, brazil South, central India, central US, east Asia, east US 2, east US, japan East, japan West, north Central US, north Europe, south Central US, south India, southeast Asia, west Europe, west US
+        #machineType: '0' # Optional. Options: 0, 2
