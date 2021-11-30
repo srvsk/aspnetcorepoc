@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  aspnet-core-logging-dev:
+    container_name: aspnet-core-logging-dev-db
+    image: postgres:12-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: >
+        pg_isready \
+          --host=localhost \
+          --port=5432 \
+          --dbname=aspnet-core-logging-dev \
+          --username=${DB_DEV_POSTGRES_USER}
+      interval: "2s"
+      timeout: "5s"
+      retries: 5
+      start_period: "1s"
+    volumes:
+      - aspnet-core-logging-dev_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432/tcp"
+    networks: 
+      - local_postgresql
+    environment:
+      - POSTGRES_USER=${DB_DEV_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${DB_DEV_POSTGRES_PASSWORD}
+      - POSTGRES_DB=aspnet-core-logging-dev
+
+  aspnet-core-logging-it:
+    container_name: aspnet-core-logging-it-db
+    image: postgres:12-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: >
+        pg_isready \
+          --host=localhost \
+          --port=5432 \
+          --dbname=aspnet-core-logging-it \
+          --username=${DB_IT_POSTGRES_USER}
+      interval: "2s"
+      timeout: "5s"
+      retries: 5
+      start_period: "1s"
+    volumes:
+      - aspnet-core-logging-it_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432/tcp"
+    networks: 
+      - local_postgresql
+    environment:
+      - POSTGRES_USER=${DB_IT_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${DB_IT_POSTGRES_PASSWORD}
+      - POSTGRES_DB=aspnet-core-logging-it
+
+  pgadmin:
+    container_name: pgadmin-ui
+    image: dpage/pgadmin4:5.2
+    restart: unless-stopped
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "8080:80/tcp"
+    networks:
+      - local_postgresql
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
+    depends_on:
+      - aspnet-core-logging-dev
+      - aspnet-core-logging-it
+    
+  seq:
+    container_name: seq
+    image: datalust/seq:2021.2
+    restart: unless-stopped
+    volumes:
+      - seq_data:/data
+    ports:
+      # Ingestion port
+      - "5341:5341/tcp"
+      # UI port
+      - "8888:80/tcp"
+    networks:
+      - local_seq
+    environment:
+      - ACCEPT_EULA=Y
+
+volumes:
+  aspnet-core-logging-dev_data:
+    external: true
+  aspnet-core-logging-it_data:
+    external: true
+  pgadmin_data:
+    external: true
+  seq_data:
+    external: true
+
+networks:
+  local_postgresql:
+  local_seq:
